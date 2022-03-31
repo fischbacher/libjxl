@@ -47,8 +47,6 @@ std::string ExtensionFromCodec(Codec codec, const bool is_gray,
       return ".gif";
     case Codec::kEXR:
       return ".exr";
-    case Codec::kPSD:
-      return ".psd";
     case Codec::kUnknown:
       return std::string();
   }
@@ -83,16 +81,13 @@ Codec CodecFromExtension(std::string extension,
 
   if (extension == ".exr") return Codec::kEXR;
 
-  if (extension == ".psd") return Codec::kPSD;
-
   return Codec::kUnknown;
 }
 
 Status DecodeBytes(const Span<const uint8_t> bytes,
                    const ColorHints& color_hints,
                    const SizeConstraints& constraints,
-                   extras::PackedPixelFile* ppf, ThreadPool* pool,
-                   Codec* orig_codec) {
+                   extras::PackedPixelFile* ppf, Codec* orig_codec) {
   if (bytes.size() < kMinBytes) return JXL_FAILURE("Too few bytes");
 
   *ppf = extras::PackedPixelFile();
@@ -123,7 +118,7 @@ Status DecodeBytes(const Span<const uint8_t> bytes,
   }
 #endif
 #if JPEGXL_ENABLE_EXR
-  else if (DecodeImageEXR(bytes, color_hints, constraints, pool, ppf)) {
+  else if (DecodeImageEXR(bytes, color_hints, constraints, ppf)) {
     codec = Codec::kEXR;
   }
 #endif

@@ -256,10 +256,12 @@ jobs:
 
           - arch: i386
             lowprecision:
+            test_in_pr: true
             build_target: i686-linux-gnu
 
     env:
       BUILD_DIR: build
+      WILL_RUN_TESTS: ${{ github.event_name == 'push' || (github.event_name == 'pull_request' && (matrix.test_in_pr || contains(github.event.pull_request.labels.*.names, 'CI:full'))) }}
 
     steps:
     - name: Setup apt
@@ -308,7 +310,6 @@ jobs:
           # Build dependencies
           cmake
           doxygen
-          libgtest-dev:${{ matrix.arch }}
           ninja-build
           pkg-config
           qemu-user-static
@@ -381,13 +382,7 @@ jobs:
           cjxl djxl libjxl.so libjxl_dec.so
     # Run the tests on push and when requested in pull_request.
     - name: Test
-      # Some tests have a small floating point error on i686.
-      # TODO(deymo): Re-enable i686 tests.
-      if: |
-        matrix.build_target != 'i686-linux-gnu' && (
-          github.event_name == 'push' ||
-          (github.event_name == 'pull_request' &&
-           contains(github.event.pull_request.labels.*.names, 'CI:full')))
+      if: env.WILL_RUN_TESTS == 'true'
       run: |
         ./ci.sh test
       env:
@@ -461,8 +456,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CCACHE_DIR: ${{ github.workspace }}/.ccache
-      EM_VERSION: 2.0.23
-      V8_VERSION: 9.3.22
+      EM_VERSION: 3.1.4
+      V8_VERSION: 9.8.177
       V8: ${{ github.workspace }}/.jsvu/v8
       BUILD_TARGET: wasm32
 
@@ -506,7 +501,7 @@ jobs:
           ${{ runner.os }}-${{ steps.git-env.outputs.parent }}-${{ matrix.variant }}
 
     - name: Install emsdk
-      uses: mymindstorm/setup-emsdk@v10
+      uses: mymindstorm/setup-emsdk@v11
       # TODO(deymo): We could cache this action but it doesn't work when running
       # in a matrix.
       with:
