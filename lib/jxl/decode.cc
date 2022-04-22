@@ -12,7 +12,6 @@
 #include "lib/jxl/dec_external_image.h"
 #include "lib/jxl/dec_frame.h"
 #include "lib/jxl/dec_modular.h"
-#include "lib/jxl/dec_reconstruct.h"
 #include "lib/jxl/decode_to_jpeg.h"
 #include "lib/jxl/fields.h"
 #include "lib/jxl/headers.h"
@@ -610,6 +609,11 @@ namespace {
 bool CheckSizeLimit(JxlDecoder* dec, size_t xsize, size_t ysize) {
   if (!dec->memory_limit_base) return true;
   if (xsize == 0 || ysize == 0) return true;
+  if (xsize >= dec->memory_limit_base || ysize >= dec->memory_limit_base) {
+    return false;
+  }
+  // Rough estimate of real row length.
+  xsize = jxl::DivCeil(xsize, 32) * 32;
   size_t num_pixels = xsize * ysize;
   if (num_pixels / xsize != ysize) return false;  // overflow
   if (num_pixels > dec->memory_limit_base) return false;
@@ -732,7 +736,7 @@ JxlDecoder* JxlDecoderCreate(const JxlMemoryManager* memory_manager) {
 
 #ifdef FUZZING_BUILD_MODE_UNSAFE_FOR_PRODUCTION
   if (!memory_manager) {
-    dec->memory_limit_base = 1 << 21;
+    dec->memory_limit_base = 53 << 16;
     // Allow 5 x max_image_size processing units; every frame is accounted
     // as W x H CPU processing units, so there could be numerous small frames
     // or few larger ones.
@@ -1066,6 +1070,7 @@ static JxlDecoderStatus ConvertImageInternal(
 
   jxl::Status status(true);
   if (want_extra_channel) {
+    JXL_ASSERT(extra_channel_index < frame.extra_channels().size());
     status = jxl::ConvertToExternal(
         frame.extra_channels()[extra_channel_index],
         BitsPerChannel(format.data_type), float_format, format.endianness,
@@ -1230,7 +1235,6 @@ JxlDecoderStatus JxlDecoderProcessCodestream(JxlDecoder* dec, const uint8_t* in,
                                           size - dec->frame_start);
       auto reader = GetBitReader(compressed);
       jxl::DecompressParams dparams;
-      dparams.preview = want_preview ? jxl::Override::kOn : jxl::Override::kOff;
       dparams.render_spotcolors = dec->render_spotcolors;
       dparams.coalescing = true;
       jxl::ImageBundle ib(&dec->metadata.m);
@@ -1565,14 +1569,20 @@ JxlDecoderStatus JxlDecoderProcessCodestream(JxlDecoder* dec, const uint8_t* in,
           }
           dec->image_out_buffer_set = false;
 
+          bool has_ec = !dec->ib->extra_channels().empty();
           for (size_t i = 0; i < dec->extra_channel_output.size(); ++i) {
             void* buffer = dec->extra_channel_output[i].buffer;
             // buffer nullptr indicates this extra channel is not requested
             if (!buffer) continue;
+            if (!has_ec) {
+              JXL_WARNING(
+                  "Extra channels are not supported when callback is used");
+              return JXL_DEC_ERROR;
+            }
             const JxlPixelFormat* format = &dec->extra_channel_output[i].format;
             JxlDecoderStatus status = ConvertImageInternal(
                 dec, *dec->ib, *format,
-                /*want_extra_channel=*/true, i, buffer,
+                /*want_extra_channel=*/true, /*extra_channel_index=*/i, buffer,
                 dec->extra_channel_output[i].buffer_size, nullptr, nullptr);
             if (status != JXL_DEC_SUCCESS) return status;
           }
@@ -1759,15 +1769,14 @@ static JxlDecoderStatus HandleBoxes(JxlDecoder* dec) {
 
     if (dec->recon_output_jpeg == JpegReconStage::kSettingMetadata &&
         !dec->JbrdNeedMoreBoxes()) {
-      using namespace jxl;
-      jpeg::JPEGData* jpeg_data = dec->ib->jpeg_data.get();
+      jxl::jpeg::JPEGData* jpeg_data = dec->ib->jpeg_data.get();
       if (dec->recon_exif_size) {
-        JxlDecoderStatus status = JxlToJpegDecoder::SetExif(
+        JxlDecoderStatus status = jxl::JxlToJpegDecoder::SetExif(
             dec->exif_metadata.data(), dec->exif_metadata.size(), jpeg_data);
         if (status != JXL_DEC_SUCCESS) return status;
       }
       if (dec->recon_xmp_size) {
-        JxlDecoderStatus status = JxlToJpegDecoder::SetXmp(
+        JxlDecoderStatus status = jxl::JxlToJpegDecoder::SetXmp(
             dec->xmp_metadata.data(), dec->xmp_metadata.size(), jpeg_data);
         if (status != JXL_DEC_SUCCESS) return status;
       }
@@ -1776,7 +1785,6 @@ static JxlDecoderStatus HandleBoxes(JxlDecoder* dec) {
 
     if (dec->recon_output_jpeg == JpegReconStage::kOutputting &&
         !dec->JbrdNeedMoreBoxes()) {
-      using namespace jxl;
       JxlDecoderStatus status =
           dec->jpeg_decoder.WriteOutput(*dec->ib->jpeg_data);
       if (status != JXL_DEC_SUCCESS) return status;

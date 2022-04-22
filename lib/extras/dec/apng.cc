@@ -43,6 +43,7 @@
 #include <utility>
 #include <vector>
 
+#include "jxl/codestream_header.h"
 #include "jxl/encode.h"
 #include "lib/jxl/base/compiler_specific.h"
 #include "lib/jxl/base/printf_macros.h"
@@ -590,12 +591,16 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
           int compression_type;
           png_bytep profile;
           png_charp name;
-          png_uint_32 proflen;
-          png_get_iCCP(png_ptr, info_ptr, &name, &compression_type, &profile,
-                       &proflen);
-          ppf->icc.resize(proflen);
-          memcpy(ppf->icc.data(), profile, proflen);
-          have_color = true;
+          png_uint_32 proflen = 0;
+          auto ok = png_get_iCCP(png_ptr, info_ptr, &name, &compression_type,
+                                 &profile, &proflen);
+          if (ok && proflen) {
+            ppf->icc.resize(proflen);
+            memcpy(ppf->icc.data(), profile, proflen);
+            have_color = true;
+          } else {
+            // TODO(eustas): JXL_WARNING?
+          }
         } else if (id == kId_sRGB) {
           JXL_RETURN_IF_ERROR(DecodeSRGB(chunk.data() + 8, chunk.size() - 12,
                                          &ppf->color_encoding));
@@ -666,7 +671,8 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
         has_nontrivial_background && frame.dispose_op != DISPOSE_OP_PREVIOUS;
     size_t x0 = frame.x0;
     size_t y0 = frame.y0;
-
+    size_t xsize = frame.data.xsize;
+    size_t ysize = frame.data.ysize;
     if (previous_frame_should_be_cleared) {
       size_t xs = frame.data.xsize;
       size_t ys = frame.data.ysize;
@@ -706,6 +712,8 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
 
         x0 = px0;
         y0 = py0;
+        xsize = pxs;
+        ysize = pys;
         should_blend = false;
         ppf->frames.emplace_back(std::move(new_data));
       } else {
@@ -714,12 +722,15 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
         memset(blank.pixels(), 0, blank.pixels_size);
         ppf->frames.emplace_back(std::move(blank));
         auto& pframe = ppf->frames.back();
-        pframe.x0 = px0;
-        pframe.y0 = py0;
+        pframe.frame_info.layer_info.crop_x0 = px0;
+        pframe.frame_info.layer_info.crop_y0 = py0;
+        pframe.frame_info.layer_info.xsize = frame.xsize;
+        pframe.frame_info.layer_info.ysize = frame.ysize;
         pframe.frame_info.duration = 0;
-        pframe.blend = false;
-        pframe.use_for_next_frame = true;
-
+        pframe.frame_info.layer_info.have_crop = 0;
+        pframe.frame_info.layer_info.blend_info.blendmode = JXL_BLEND_REPLACE;
+        pframe.frame_info.layer_info.blend_info.source = 0;
+        pframe.frame_info.layer_info.save_as_reference = 1;
         ppf->frames.emplace_back(std::move(frame.data));
       }
     } else {
@@ -727,79 +738,28 @@ Status DecodeImageAPNG(const Span<const uint8_t> bytes,
     }
 
     auto& pframe = ppf->frames.back();
-    pframe.x0 = x0;
-    pframe.y0 = y0;
+    pframe.frame_info.layer_info.crop_x0 = x0;
+    pframe.frame_info.layer_info.crop_y0 = y0;
+    pframe.frame_info.layer_info.xsize = xsize;
+    pframe.frame_info.layer_info.ysize = ysize;
     pframe.frame_info.duration = frame.duration;
-    pframe.blend = should_blend;
-    pframe.use_for_next_frame = use_for_next_frame;
+    pframe.frame_info.layer_info.blend_info.blendmode =
+        should_blend ? JXL_BLEND_BLEND : JXL_BLEND_REPLACE;
+    bool is_full_size = x0 == 0 && y0 == 0 && xsize == ppf->info.xsize &&
+                        ysize == ppf->info.ysize;
+    pframe.frame_info.layer_info.have_crop = is_full_size ? 0 : 1;
+    pframe.frame_info.layer_info.blend_info.source = should_blend ? 1 : 0;
+    pframe.frame_info.layer_info.blend_info.alpha = 0;
+    pframe.frame_info.layer_info.save_as_reference = use_for_next_frame ? 1 : 0;
 
-    if (has_nontrivial_background &&
-        frame.dispose_op == DISPOSE_OP_BACKGROUND) {
-      previous_frame_should_be_cleared = true;
-    } else {
-      previous_frame_should_be_cleared = false;
-    }
+    previous_frame_should_be_cleared =
+        has_nontrivial_background && frame.dispose_op == DISPOSE_OP_BACKGROUND;
   }
   if (ppf->frames.empty()) return JXL_FAILURE("No frames decoded");
   ppf->frames.back().frame_info.is_last = true;
 
   return true;
 }
-
-static void PngWrite(png_structp png_ptr, png_bytep data, png_size_t length) {
-  PaddedBytes* bytes = static_cast<PaddedBytes*>(png_get_io_ptr(png_ptr));
-  bytes->append(data, data + length);
-}
-
-// Stores XMP and EXIF/IPTC into key/value strings for PNG
-class BlobsWriterPNG {
- public:
-  static Status Encode(const Blobs& blobs, std::vector<std::string>* strings) {
-    if (!blobs.exif.empty()) {
-      JXL_RETURN_IF_ERROR(EncodeBase16("exif", blobs.exif, strings));
-    }
-    if (!blobs.iptc.empty()) {
-      JXL_RETURN_IF_ERROR(EncodeBase16("iptc", blobs.iptc, strings));
-    }
-    if (!blobs.xmp.empty()) {
-      JXL_RETURN_IF_ERROR(EncodeBase16("xmp", blobs.xmp, strings));
-    }
-    return true;
-  }
-
- private:
-  static JXL_INLINE char EncodeNibble(const uint8_t nibble) {
-    JXL_ASSERT(nibble < 16);
-    return (nibble < 10) ? '0' + nibble : 'a' + nibble - 10;
-  }
-
-  static Status EncodeBase16(const std::string& type, const PaddedBytes& bytes,
-                             std::vector<std::string>* strings) {
-    // Encoding: base16 with newline after 72 chars.
-    const size_t base16_size =
-        2 * bytes.size() + DivCeil(bytes.size(), size_t(36)) + 1;
-    std::string base16;
-    base16.reserve(base16_size);
-    for (size_t i = 0; i < bytes.size(); ++i) {
-      if (i % 36 == 0) base16.push_back('\n');
-      base16.push_back(EncodeNibble(bytes[i] >> 4));
-      base16.push_back(EncodeNibble(bytes[i] & 0x0F));
-    }
-    base16.push_back('\n');
-    JXL_ASSERT(base16.length() == base16_size);
-
-    char key[30];
-    snprintf(key, sizeof(key), "Raw profile type %s", type.c_str());
-
-    char header[30];
-    snprintf(header, sizeof(header), "\n%s\n%8" PRIuS, type.c_str(),
-             bytes.size());
-
-    strings->push_back(std::string(key));
-    strings->push_back(std::string(header) + base16);
-    return true;
-  }
-};
 
 }  // namespace extras
 }  // namespace jxl
