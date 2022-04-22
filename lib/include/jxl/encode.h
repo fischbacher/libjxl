@@ -283,6 +283,13 @@ typedef enum {
    */
   JXL_ENC_FRAME_INDEX_BOX = 31,
 
+  /** Sets brotli encode effort for use in JPEG recompression and compressed
+   * metadata boxes (brob). Can be -1 (default) or 0 (fastest) to 11 (slowest).
+   * Default is based on the general encode effort in case of JPEG
+   * recompression, and 4 for brob boxes.
+   */
+  JXL_ENC_FRAME_SETTING_BROTLI_EFFORT = 32,
+
   /** Enum value not to be used as an option. This value is added to force the
    * C compiler to have the enum to take a known size.
    */
@@ -509,6 +516,8 @@ JxlEncoderAddJPEGFrame(const JxlEncoderFrameSettings* frame_settings,
  *
  * Extra channels not handled here need to be set by @ref
  * JxlEncoderSetExtraChannelBuffer.
+ * If the image has alpha, and alpha is not passed here, it will implicitly be
+ * set to all-opaque (an alpha value of 1.0 everywhere).
  *
  * The color profile of the pixels depends on the value of uses_original_profile
  * in the JxlBasicInfo. If true, the pixels are assumed to be encoded in the
@@ -531,7 +540,8 @@ JxlEncoderAddJPEGFrame(const JxlEncoderFrameSettings* frame_settings,
  * contents are copied internally.
  * @param buffer buffer type to input the pixel data from. Owned by the caller
  * and its contents are copied internally.
- * @param size size of buffer in bytes.
+ * @param size size of buffer in bytes. This size should match what is implied
+ * by the frame dimensions and the pixel format.
  * @return JXL_ENC_SUCCESS on success, JXL_ENC_ERROR on error
  */
 JXL_EXPORT JxlEncoderStatus JxlEncoderAddImageFrame(
@@ -556,7 +566,8 @@ JXL_EXPORT JxlEncoderStatus JxlEncoderAddImageFrame(
  * number of channels for an extra channel is always assumed to be one.
  * @param buffer buffer type to input the pixel data from. Owned by the caller
  * and its contents are copied internally.
- * @param size size of buffer in bytes.
+ * @param size size of buffer in bytes. This size should match what is implied
+ * by the frame dimensions and the pixel format.
  * @param index index of the extra channel to use.
  * @return JXL_ENC_SUCCESS on success, JXL_ENC_ERROR on error
  */

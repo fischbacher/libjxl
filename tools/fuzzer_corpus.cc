@@ -218,12 +218,15 @@ bool GenerateFile(const char* output_dir, const ImageSpec& spec,
     const jxl::Span<const uint8_t> span(img_data.data(), img_data.size());
     JXL_RETURN_IF_ERROR(ConvertFromExternal(
         span, spec.width, spec.height, io.metadata.m.color_encoding,
-        /*has_alpha=*/has_alpha,
+        bytes_per_pixel / bytes_per_sample,
         /*alpha_is_premultiplied=*/spec.alpha_is_premultiplied,
         io.metadata.m.bit_depth.bits_per_sample, JXL_LITTLE_ENDIAN,
         false /* flipped_y */, nullptr, &ib, /*float_in=*/false, /*align=*/0));
     io.frames.push_back(std::move(ib));
   }
+
+  jxl::CompressParams params;
+  params.speed_tier = spec.params.speed_tier;
 
 #if JPEGXL_ENABLE_JPEG
   if (spec.is_reconstructible_jpeg) {
@@ -236,7 +239,8 @@ bool GenerateFile(const char* output_dir, const ImageSpec& spec,
     JXL_RETURN_IF_ERROR(jxl::jpeg::DecodeImageJPG(
         jxl::Span<const uint8_t>(jpeg_bytes.data(), jpeg_bytes.size()), &io));
     jxl::PaddedBytes jpeg_data;
-    JXL_RETURN_IF_ERROR(EncodeJPEGData(*io.Main().jpeg_data, &jpeg_data));
+    JXL_RETURN_IF_ERROR(
+        EncodeJPEGData(*io.Main().jpeg_data, &jpeg_data, params));
     std::vector<uint8_t> header;
     header.insert(header.end(), jxl::kContainerHeader,
                   jxl::kContainerHeader + sizeof(jxl::kContainerHeader));
@@ -249,8 +253,6 @@ bool GenerateFile(const char* output_dir, const ImageSpec& spec,
   }
 #endif
 
-  jxl::CompressParams params;
-  params.speed_tier = spec.params.speed_tier;
   params.modular_mode = spec.params.modular_mode;
   params.color_transform = spec.params.color_transform;
   params.butteraugli_distance = spec.params.butteraugli_distance;
@@ -258,7 +260,6 @@ bool GenerateFile(const char* output_dir, const ImageSpec& spec,
   params.lossy_palette = spec.params.lossy_palette;
   if (spec.params.preview) params.preview = jxl::Override::kOn;
   if (spec.params.noise) params.noise = jxl::Override::kOn;
-  params.quality_pair = {100., 100.};
 
   jxl::AuxOut aux_out;
   jxl::PassesEncoderState passes_encoder_state;
@@ -305,6 +306,7 @@ std::vector<ImageSpec::CjxlParams> CompressParamsList() {
     ImageSpec::CjxlParams params;
     params.modular_mode = true;
     params.color_transform = jxl::ColorTransform::kNone;
+    params.butteraugli_distance = 0.f;
     params.modular_predictor = {jxl::Predictor::Weighted};
     ret.push_back(params);
   }
@@ -357,6 +359,7 @@ int main(int argc, const char** argv) {
   }
 
   struct stat st;
+  memset(&st, 0, sizeof(st));
   if (stat(dest_dir, &st) != 0 || !S_ISDIR(st.st_mode)) {
     fprintf(stderr, "Output path \"%s\" is not a directory.\n", dest_dir);
     Usage();

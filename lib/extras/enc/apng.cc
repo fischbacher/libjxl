@@ -49,6 +49,7 @@
 #include "lib/jxl/dec_external_image.h"
 #include "lib/jxl/enc_color_management.h"
 #include "lib/jxl/enc_image_bundle.h"
+#include "lib/jxl/exif.h"
 #include "lib/jxl/frame_header.h"
 #include "lib/jxl/headers.h"
 #include "lib/jxl/image.h"
@@ -70,7 +71,12 @@ class BlobsWriterPNG {
  public:
   static Status Encode(const Blobs& blobs, std::vector<std::string>* strings) {
     if (!blobs.exif.empty()) {
-      JXL_RETURN_IF_ERROR(EncodeBase16("exif", blobs.exif, strings));
+      // PNG viewers typically ignore Exif orientation but not all of them do
+      // (and e.g. cjxl doesn't), so we overwrite the Exif orientation to the
+      // identity to avoid repeated orientation.
+      PaddedBytes exif(blobs.exif);
+      ResetExifOrientation(exif);
+      JXL_RETURN_IF_ERROR(EncodeBase16("exif", exif, strings));
     }
     if (!blobs.iptc.empty()) {
       JXL_RETURN_IF_ERROR(EncodeBase16("iptc", blobs.iptc, strings));
@@ -260,7 +266,7 @@ Status EncodeImageAPNG(const CodecInOut* io, const ColorEncoding& c_desired,
     }
 
     count++;
-    if (count == io->frames.size()) png_write_end(png_ptr, NULL);
+    if (count == io->frames.size() || !have_anim) png_write_end(png_ptr, NULL);
 
     png_destroy_write_struct(&png_ptr, &info_ptr);
   }
